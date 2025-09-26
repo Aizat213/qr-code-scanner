@@ -4,7 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>QR Code Scanner</title>
-    <!-- Use jsQR library instead - more reliable -->
     <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
     <style>
         * {
@@ -143,6 +142,17 @@
             border-radius: 5px;
             border: 1px solid #ddd;
         }
+        
+        .scanning-active {
+            border: 3px solid #4CAF50 !important;
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0% { border-color: #4CAF50; }
+            50% { border-color: #45a049; }
+            100% { border-color: #4CAF50; }
+        }
     </style>
 </head>
 <body>
@@ -161,6 +171,7 @@
             <video id="video" playsinline></video>
             <canvas id="canvas"></canvas>
             <div id="scan-region"></div>
+            <p style="text-align: center; color: #666; margin-top: 10px;">Point camera at QR code</p>
         </div>
         
         <div id="result">
@@ -169,8 +180,9 @@
     </div>
 
     <script>
-        // REPLACE THIS WITH YOUR ACTUAL GOOGLE SCRIPT URL
-        const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxZ2_4nicugjHdXM79gLj5vsjW6cnzYZRekoHz0EwVLeFpDJKu8OjHwp7k4wiJIVHEqwQ/exec';
+        // ⚠️ REPLACE THIS WITH YOUR ACTUAL GOOGLE SCRIPT URL ⚠️
+        // It should look like: https://script.google.com/macros/s/.../exec
+        const SCRIPT_URL = 'YOUR_GOOGLE_SCRIPT_URL_HERE';
         
         class QRScanner {
             constructor() {
@@ -194,12 +206,33 @@
                 this.startButton.addEventListener('click', () => this.startScanner());
                 this.stopButton.addEventListener('click', () => this.stopScanner());
                 
-                // Get available cameras
+                // Test the Google Script URL on startup
+                await this.testScriptUrl();
                 await this.loadCameras();
+            }
+            
+            async testScriptUrl() {
+                if (SCRIPT_URL.includes('YOUR_GOOGLE_SCRIPT_URL_HERE')) {
+                    console.error('⚠️ Please update SCRIPT_URL with your actual Google Apps Script URL');
+                    this.showError('Configuration needed: Please update the Google Script URL in the code');
+                    return;
+                }
+                
+                try {
+                    const testResponse = await fetch(SCRIPT_URL);
+                    console.log('URL test response:', testResponse.status);
+                } catch (error) {
+                    console.error('URL test failed:', error);
+                    this.showError('Backend connection issue: ' + error.message);
+                }
             }
             
             async loadCameras() {
                 try {
+                    // Request camera permission first
+                    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                    stream.getTracks().forEach(track => track.stop());
+                    
                     const devices = await navigator.mediaDevices.enumerateDevices();
                     const videoDevices = devices.filter(device => device.kind === 'videoinput');
                     
@@ -213,7 +246,7 @@
                         });
                     }
                 } catch (error) {
-                    console.log('Could not enumerate cameras:', error);
+                    console.log('Camera setup:', error);
                 }
             }
             
@@ -230,7 +263,6 @@
                         }
                     };
                     
-                    // Use selected camera if available
                     if (this.cameraSelect.value) {
                         constraints.video.deviceId = { exact: this.cameraSelect.value };
                     }
@@ -238,15 +270,21 @@
                     this.stream = await navigator.mediaDevices.getUserMedia(constraints);
                     this.video.srcObject = this.stream;
                     
-                    this.video.addEventListener('loadedmetadata', () => {
-                        this.video.play();
-                        this.scannerContainer.classList.remove('hidden');
-                        this.startButton.classList.add('hidden');
-                        this.stopButton.classList.remove('hidden');
-                        this.startButton.disabled = false;
-                        this.isScanning = true;
-                        this.scanFrame();
+                    await new Promise((resolve) => {
+                        this.video.addEventListener('loadedmetadata', () => {
+                            this.video.play();
+                            resolve();
+                        });
                     });
+                    
+                    this.scannerContainer.classList.remove('hidden');
+                    this.scannerContainer.classList.add('scanning-active');
+                    this.startButton.classList.add('hidden');
+                    this.stopButton.classList.remove('hidden');
+                    this.startButton.disabled = false;
+                    this.isScanning = true;
+                    
+                    this.scanFrame();
                     
                 } catch (error) {
                     this.showError('Camera error: ' + error.message);
@@ -255,26 +293,37 @@
             }
             
             stopScanner() {
+                console.log('Stopping scanner...');
                 this.isScanning = false;
                 
                 if (this.animationFrame) {
                     cancelAnimationFrame(this.animationFrame);
+                    this.animationFrame = null;
                 }
                 
                 if (this.stream) {
-                    this.stream.getTracks().forEach(track => track.stop());
+                    this.stream.getTracks().forEach(track => {
+                        track.stop();
+                        console.log('Stopped track:', track.kind);
+                    });
                     this.stream = null;
                 }
                 
                 this.video.srcObject = null;
                 this.scannerContainer.classList.add('hidden');
+                this.scannerContainer.classList.remove('scanning-active');
                 this.startButton.classList.remove('hidden');
                 this.stopButton.classList.add('hidden');
-                this.resultDiv.innerHTML = '<p style="text-align: center; color: #666;">Scanner stopped</p>';
+                this.startButton.disabled = false;
+                
+                this.resultDiv.innerHTML = '<p style="text-align: center; color: #666;">Scanner stopped. Click "Start Scanner" to scan again.</p>';
             }
             
             scanFrame() {
-                if (!this.isScanning) return;
+                if (!this.isScanning) {
+                    console.log('Scanning stopped, exiting scan loop');
+                    return;
+                }
                 
                 if (this.video.readyState === this.video.HAVE_ENOUGH_DATA) {
                     this.canvas.width = this.video.videoWidth;
@@ -286,8 +335,9 @@
                     const code = jsQR(imageData.data, imageData.width, imageData.height);
                     
                     if (code) {
+                        console.log('QR Code detected:', code.data);
                         this.handleScan(code.data);
-                        return; // Stop scanning after successful read
+                        return;
                     }
                 }
                 
@@ -295,29 +345,47 @@
             }
             
             async handleScan(itemId) {
-                console.log('Scanned ID:', itemId);
+                console.log('Processing scanned ID:', itemId);
                 this.resultDiv.innerHTML = '<p class="loading">Loading item information...</p>';
+                
+                // Stop scanning while we fetch data
+                this.isScanning = false;
+                if (this.animationFrame) {
+                    cancelAnimationFrame(this.animationFrame);
+                }
                 
                 try {
                     const itemData = await this.fetchItemData(itemId.trim());
                     this.displayItem(itemData);
-                    this.stopScanner();
                     
                 } catch (error) {
+                    console.error('Fetch error:', error);
                     this.showError('Error: ' + error.message);
-                    // Continue scanning after error
-                    this.scanFrame();
+                    
+                    // Option to restart scanning after error
+                    this.resultDiv.innerHTML += `
+                        <div style="text-align: center; margin-top: 20px;">
+                            <button onclick="scanner.startScanner()" class="button">Restart Scanner</button>
+                        </div>
+                    `;
                 }
             }
             
             async fetchItemData(itemId) {
-                const response = await fetch(`${SCRIPT_URL}?id=${encodeURIComponent(itemId)}`);
+                console.log('Fetching data for ID:', itemId);
+                
+                // Add timestamp to avoid caching issues
+                const url = `${SCRIPT_URL}?id=${encodeURIComponent(itemId)}&t=${Date.now()}`;
+                console.log('Fetch URL:', url);
+                
+                const response = await fetch(url);
                 
                 if (!response.ok) {
-                    throw new Error('Network error: ' + response.status);
+                    throw new Error(`HTTP error! status: ${response.status}`);
                 }
                 
                 const data = await response.json();
+                console.log('Response data:', data);
                 
                 if (data.error) {
                     throw new Error(data.error);
