@@ -4,25 +4,365 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>QR Code Scanner</title>
-    <script src="https://unpkg.com/html5-qrcode@2.3.8/minified/html5-qrcode.min.js"></script>
-    <link rel="stylesheet" href="style.css">
+    <!-- Use jsQR library instead - more reliable -->
+    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: Arial, sans-serif;
+        }
+        
+        body {
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        
+        h1 {
+            text-align: center;
+            color: #333;
+            margin-bottom: 20px;
+        }
+        
+        #scanner-container {
+            width: 100%;
+            max-width: 500px;
+            margin: 20px auto;
+            position: relative;
+        }
+        
+        #video {
+            width: 100%;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            display: none;
+        }
+        
+        #canvas {
+            display: none;
+        }
+        
+        #scan-region {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 200px;
+            height: 200px;
+            border: 3px solid #4CAF50;
+            border-radius: 8px;
+            box-shadow: 0 0 0 1000px rgba(0,0,0,0.3);
+        }
+        
+        #result {
+            margin-top: 20px;
+            padding: 20px;
+            border-radius: 8px;
+            background-color: #f9f9f9;
+            min-height: 200px;
+        }
+        
+        .button {
+            background-color: #4CAF50;
+            color: white;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 10px;
+            display: inline-block;
+        }
+        
+        .button:hover {
+            background-color: #45a049;
+        }
+        
+        .button.stop {
+            background-color: #f44336;
+        }
+        
+        .button.stop:hover {
+            background-color: #da190b;
+        }
+        
+        .button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        
+        .hidden {
+            display: none;
+        }
+        
+        .item-image {
+            max-width: 100%;
+            height: auto;
+            border-radius: 8px;
+            margin: 10px 0;
+            max-height: 200px;
+        }
+        
+        .loading {
+            text-align: center;
+            color: #666;
+            font-style: italic;
+        }
+        
+        .error {
+            color: #d32f2f;
+            background-color: #ffebee;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 10px 0;
+            border-left: 4px solid #d32f2f;
+        }
+        
+        .success {
+            color: #388e3c;
+            background-color: #e8f5e9;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 10px 0;
+            border-left: 4px solid #388e3c;
+        }
+        
+        #camera-select {
+            padding: 8px;
+            margin: 10px;
+            border-radius: 5px;
+            border: 1px solid #ddd;
+        }
+    </style>
 </head>
 <body>
     <div class="container">
         <h1>📱 QR Code Scanner</h1>
         
         <div style="text-align: center;">
+            <select id="camera-select" class="hidden">
+                <option value="">Select Camera...</option>
+            </select>
             <button id="startButton" class="button">Start Scanner</button>
             <button id="stopButton" class="button stop hidden">Stop Scanner</button>
         </div>
         
-        <div id="reader"></div>
+        <div id="scanner-container" class="hidden">
+            <video id="video" playsinline></video>
+            <canvas id="canvas"></canvas>
+            <div id="scan-region"></div>
+        </div>
         
         <div id="result">
-            <p style="text-align: center; color: #666;">Scan a QR code to see item information</p>
+            <p style="text-align: center; color: #666;">Click "Start Scanner" to begin</p>
         </div>
     </div>
 
-    <script src="script.js"></script>
+    <script>
+        // REPLACE THIS WITH YOUR ACTUAL GOOGLE SCRIPT URL
+        const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxZ2_4nicugjHdXM79gLj5vsjW6cnzYZRekoHz0EwVLeFpDJKu8OjHwp7k4wiJIVHEqwQ/exec';
+        
+        class QRScanner {
+            constructor() {
+                this.video = document.getElementById('video');
+                this.canvas = document.getElementById('canvas');
+                this.canvasContext = this.canvas.getContext('2d');
+                this.startButton = document.getElementById('startButton');
+                this.stopButton = document.getElementById('stopButton');
+                this.scannerContainer = document.getElementById('scanner-container');
+                this.resultDiv = document.getElementById('result');
+                this.cameraSelect = document.getElementById('camera-select');
+                
+                this.stream = null;
+                this.isScanning = false;
+                this.animationFrame = null;
+                
+                this.init();
+            }
+            
+            async init() {
+                this.startButton.addEventListener('click', () => this.startScanner());
+                this.stopButton.addEventListener('click', () => this.stopScanner());
+                
+                // Get available cameras
+                await this.loadCameras();
+            }
+            
+            async loadCameras() {
+                try {
+                    const devices = await navigator.mediaDevices.enumerateDevices();
+                    const videoDevices = devices.filter(device => device.kind === 'videoinput');
+                    
+                    if (videoDevices.length > 1) {
+                        this.cameraSelect.classList.remove('hidden');
+                        videoDevices.forEach(device => {
+                            const option = document.createElement('option');
+                            option.value = device.deviceId;
+                            option.text = device.label || `Camera ${this.cameraSelect.length}`;
+                            this.cameraSelect.appendChild(option);
+                        });
+                    }
+                } catch (error) {
+                    console.log('Could not enumerate cameras:', error);
+                }
+            }
+            
+            async startScanner() {
+                this.startButton.disabled = true;
+                this.resultDiv.innerHTML = '<p class="loading">Initializing camera...</p>';
+                
+                try {
+                    const constraints = {
+                        video: {
+                            facingMode: 'environment',
+                            width: { ideal: 1280 },
+                            height: { ideal: 720 }
+                        }
+                    };
+                    
+                    // Use selected camera if available
+                    if (this.cameraSelect.value) {
+                        constraints.video.deviceId = { exact: this.cameraSelect.value };
+                    }
+                    
+                    this.stream = await navigator.mediaDevices.getUserMedia(constraints);
+                    this.video.srcObject = this.stream;
+                    
+                    this.video.addEventListener('loadedmetadata', () => {
+                        this.video.play();
+                        this.scannerContainer.classList.remove('hidden');
+                        this.startButton.classList.add('hidden');
+                        this.stopButton.classList.remove('hidden');
+                        this.startButton.disabled = false;
+                        this.isScanning = true;
+                        this.scanFrame();
+                    });
+                    
+                } catch (error) {
+                    this.showError('Camera error: ' + error.message);
+                    this.startButton.disabled = false;
+                }
+            }
+            
+            stopScanner() {
+                this.isScanning = false;
+                
+                if (this.animationFrame) {
+                    cancelAnimationFrame(this.animationFrame);
+                }
+                
+                if (this.stream) {
+                    this.stream.getTracks().forEach(track => track.stop());
+                    this.stream = null;
+                }
+                
+                this.video.srcObject = null;
+                this.scannerContainer.classList.add('hidden');
+                this.startButton.classList.remove('hidden');
+                this.stopButton.classList.add('hidden');
+                this.resultDiv.innerHTML = '<p style="text-align: center; color: #666;">Scanner stopped</p>';
+            }
+            
+            scanFrame() {
+                if (!this.isScanning) return;
+                
+                if (this.video.readyState === this.video.HAVE_ENOUGH_DATA) {
+                    this.canvas.width = this.video.videoWidth;
+                    this.canvas.height = this.video.videoHeight;
+                    
+                    this.canvasContext.drawImage(this.video, 0, 0, this.canvas.width, this.canvas.height);
+                    
+                    const imageData = this.canvasContext.getImageData(0, 0, this.canvas.width, this.canvas.height);
+                    const code = jsQR(imageData.data, imageData.width, imageData.height);
+                    
+                    if (code) {
+                        this.handleScan(code.data);
+                        return; // Stop scanning after successful read
+                    }
+                }
+                
+                this.animationFrame = requestAnimationFrame(() => this.scanFrame());
+            }
+            
+            async handleScan(itemId) {
+                console.log('Scanned ID:', itemId);
+                this.resultDiv.innerHTML = '<p class="loading">Loading item information...</p>';
+                
+                try {
+                    const itemData = await this.fetchItemData(itemId.trim());
+                    this.displayItem(itemData);
+                    this.stopScanner();
+                    
+                } catch (error) {
+                    this.showError('Error: ' + error.message);
+                    // Continue scanning after error
+                    this.scanFrame();
+                }
+            }
+            
+            async fetchItemData(itemId) {
+                const response = await fetch(`${SCRIPT_URL}?id=${encodeURIComponent(itemId)}`);
+                
+                if (!response.ok) {
+                    throw new Error('Network error: ' + response.status);
+                }
+                
+                const data = await response.json();
+                
+                if (data.error) {
+                    throw new Error(data.error);
+                }
+                
+                return data;
+            }
+            
+            displayItem(item) {
+                this.resultDiv.innerHTML = `
+                    <div class="success">
+                        <h2>✅ ${item.name || 'Unnamed Item'}</h2>
+                    </div>
+                    ${item.image_url ? `
+                        <div style="text-align: center;">
+                            <img src="${item.image_url}" alt="${item.name}" class="item-image" 
+                                 onerror="this.style.display='none'" onload="this.style.display='block'">
+                        </div>
+                    ` : ''}
+                    <p><strong>Description:</strong> ${item.description || 'No description available'}</p>
+                    <p><strong>Category:</strong> ${item.category || 'Uncategorized'}</p>
+                    <p><strong>ID:</strong> ${item.id}</p>
+                    <div style="text-align: center; margin-top: 20px;">
+                        <button onclick="scanner.startScanner()" class="button">Scan Another Code</button>
+                    </div>
+                `;
+            }
+            
+            showError(message) {
+                this.resultDiv.innerHTML = `
+                    <div class="error">
+                        <strong>Error:</strong> ${message}
+                    </div>
+                    <div style="text-align: center; margin-top: 20px;">
+                        <button onclick="scanner.startScanner()" class="button">Try Again</button>
+                    </div>
+                `;
+            }
+        }
+        
+        // Initialize scanner when page loads
+        let scanner;
+        document.addEventListener('DOMContentLoaded', () => {
+            scanner = new QRScanner();
+        });
+    </script>
 </body>
 </html>
